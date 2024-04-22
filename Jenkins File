@@ -1,0 +1,92 @@
+pipeline {
+    agent any
+    tools {
+        jdk 'jdk17'
+        nodejs 'node16'
+    }
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+    }
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+        stage('Checkout from Git') {
+            steps {
+                git branch: 'main', url: 'https://github.com/Manikandansmile/DevSecOps-Project.git'
+            }
+        }
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonar-server') {
+                    sh "$SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Netflix -Dsonar.projectKey=Netflix"
+                }
+            }
+        }
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm install'
+            }
+        }
+        stage('OWASP Dependency Check') {
+            steps {
+                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
+        }
+        stage('TRIVY FS SCAN') {
+            steps {
+                sh 'trivy fs . > trivyfs.txt'
+            }
+        }
+        stage('Docker Build & Push') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
+                        sh 'docker build --build-arg TMDB_V3_API_KEY=aeab998e61909b78da79ebb4343379da -t netflix .'
+                        sh 'docker tag netflix manikandan93smily/netflix:latest'
+                        sh 'docker push manikandan93smily/netflix:latest'
+                    }
+                }
+            }
+        }
+        stage('TRIVY Image Scan') {
+            steps {
+                sh 'trivy image manikandan93smily/netflix:latest > trivyimage.txt'
+            }
+        }
+        stage('Remove Previous Container') {
+            steps {
+                sh 'docker rm -f netflix || true'
+            }
+        }
+        stage('Deploy to Container') {
+            steps {
+                sh 'docker run -d --name netflix -p 8081:80 manikandan93smily/netflix:latest'
+            }
+        }
+    }
+    post {
+        always {
+            script {
+                def result = currentBuild.result ?: 'SUCCESS'
+                
+                // Notification message
+                def body = "Jenkins Pipeline Execution Summary:\n\n"
+                body += "Status: ${result}\n\n"
+                
+                // Read Trivy image scan report
+                def trivyReport = readFile('trivyimage.txt')
+                body += "Trivy Image Scan Report:\n"
+                body += trivyReport
+                
+                // Send email notification
+                emailext body: body,
+                         subject: "Jenkins Pipeline ${result}",
+                         to: 'maniraja802@gmail.com'
+            }
+        }
+    }
+}
